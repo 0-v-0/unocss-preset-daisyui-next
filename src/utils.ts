@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, resolve } from "node:path";
 
@@ -18,7 +18,7 @@ const getDaisyUIObjects = async (type: string) => {
 	const path = resolve(dirname(req.resolve("daisyui")), type);
 	const content: Record<string, CssInJs> = {};
 
-	for (const file of readdirSync(path, {
+	for (const file of await fs.readdir(path, {
 		recursive: true,
 	})) {
 		const filePath = resolve(path, file.toString());
@@ -42,7 +42,7 @@ const generateDarkenColorFrom = (input: string, percentage = 0.07) => {
 	try {
 		const result = interpolate([input, "black"], "oklch")(percentage);
 		return colorObjToString(result);
-	} catch (e) {
+	} catch {
 		return false;
 	}
 };
@@ -51,8 +51,8 @@ const isDark = (color: string) => {
 	return l < 50;
 };
 
-const generateForegroundColorFrom = (
-	input: string | undefined,
+const generateForegroundColor = (
+	input?: string,
 	percentage = 0.8,
 ) => {
 	if (!input) {
@@ -65,7 +65,7 @@ const generateForegroundColorFrom = (
 			"oklch",
 		)(percentage);
 		return colorObjToString(result);
-	} catch (e) {
+	} catch {
 		// colorIsInvalid(input)
 		return false;
 	}
@@ -94,7 +94,7 @@ const convertColorFormat = (input: Record<string, string>) => {
 			try {
 				const colorObj = oklch(value)!;
 				resultObj[colorNames[rule]] = colorObjToString(colorObj);
-			} catch (e) {
+			} catch {
 				return false;
 			}
 		} else {
@@ -132,44 +132,44 @@ const convertColorFormat = (input: Record<string, string>) => {
 
 		// auto generate content colors
 		if (!("base-content" in input)) {
-			resultObj["--bc"] = generateForegroundColorFrom(input["base-100"]!, 0.8);
+			resultObj["--bc"] = generateForegroundColor(input["base-100"]!, 0.8);
 		}
 		if (!("primary-content" in input)) {
-			resultObj["--pc"] = generateForegroundColorFrom(input["primary"], 0.8);
+			resultObj["--pc"] = generateForegroundColor(input["primary"], 0.8);
 		}
 		if (!("secondary-content" in input)) {
-			resultObj["--sc"] = generateForegroundColorFrom(input["secondary"], 0.8);
+			resultObj["--sc"] = generateForegroundColor(input["secondary"], 0.8);
 		}
 		if (!("accent-content" in input)) {
-			resultObj["--ac"] = generateForegroundColorFrom(input["accent"], 0.8);
+			resultObj["--ac"] = generateForegroundColor(input["accent"], 0.8);
 		}
 		if (!("neutral-content" in input)) {
-			resultObj["--nc"] = generateForegroundColorFrom(input["neutral"], 0.8);
+			resultObj["--nc"] = generateForegroundColor(input["neutral"], 0.8);
 		}
 		if (!("info-content" in input)) {
 			if ("info" in input) {
-				resultObj["--inc"] = generateForegroundColorFrom(input["info"], 0.8);
+				resultObj["--inc"] = generateForegroundColor(input["info"], 0.8);
 			} else {
 				resultObj["--inc"] = "0% 0 0";
 			}
 		}
 		if (!("success-content" in input)) {
 			if ("success" in input) {
-				resultObj["--suc"] = generateForegroundColorFrom(input["success"], 0.8);
+				resultObj["--suc"] = generateForegroundColor(input["success"], 0.8);
 			} else {
 				resultObj["--suc"] = "0% 0 0";
 			}
 		}
 		if (!("warning-content" in input)) {
 			if ("warning" in input) {
-				resultObj["--wac"] = generateForegroundColorFrom(input["warning"], 0.8);
+				resultObj["--wac"] = generateForegroundColor(input["warning"], 0.8);
 			} else {
 				resultObj["--wac"] = "0% 0 0";
 			}
 		}
 		if (!("error-content" in input)) {
 			if ("error" in input) {
-				resultObj["--erc"] = generateForegroundColorFrom(input["error"], 0.8);
+				resultObj["--erc"] = generateForegroundColor(input["error"], 0.8);
 			} else {
 				resultObj["--erc"] = "0% 0 0";
 			}

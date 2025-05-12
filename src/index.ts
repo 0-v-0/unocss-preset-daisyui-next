@@ -1,4 +1,4 @@
-import type { DynamicRule, Preflight, Preset } from "@unocss/core";
+import { CSSObjectInput, type DynamicRule, type Preflight, type Preset } from "@unocss/core";
 import autoprefixer from "autoprefixer";
 import camelCase from "camelcase";
 
@@ -12,51 +12,48 @@ import {
 } from "./utils";
 
 import { type ClassToken, tokenize } from "parsel-js";
-import postcss, { type Rule, type ChildNode } from "postcss";
+import postcss, { type Rule, type ChildNode, Declaration } from "postcss";
 import { parse } from "postcss-js";
 
 const processor = postcss(autoprefixer);
 const process = (object: CssInJs) =>
 	processor.process(object, { parser: parse });
 
-const replacePrefix = (css: string) => css.replaceAll("--tw-", "--un-");
+type StringMap = Record<string, string>;
 
 const defaultOptions = {
 	styled: true,
 	themes: false as
 		| boolean
-		| Array<string | Record<string, Record<string, string>>>,
+		| Array<string | Record<string, StringMap>>,
 	base: true,
-	utils: true,
 	rtl: false,
 	darkTheme: "dark",
+	utils: true,
+	variablePrefix: "--un-",
 };
 
 const injectThemes = (
 	addBase: (themes: unknown) => void,
 	config: (key: string) => unknown,
-	themes: Record<string, Record<string, string>>,
+	themes: Record<string, StringMap>,
 ) => {
-	const includedThemesObj: Record<string, Record<string, string> | false> = {};
+	const includedThemesObj: Record<string, StringMap | false> = {};
 	// add default themes
-	const themeRoot = (config("daisyui.themeRoot") as string) ?? ":root";
-	for (const [theme, value] of Object.entries(themes)) {
-		includedThemesObj[theme] = convertColorFormat(
-			value as Record<string, string>,
-		);
+	const themeRoot = config("daisyui.themeRoot") as string ?? ":root";
+	for (const theme in themes) {
+		includedThemesObj[theme] = convertColorFormat(themes[theme]);
 	}
 
 	// add custom themes
 	if (Array.isArray(config("daisyui.themes"))) {
 		for (const item of config("daisyui.themes") as Array<
-			string | Record<string, Record<string, string>>
+			string | Record<string, StringMap>
 		>) {
-			if (typeof item === "object" && item !== null) {
-				for (const [customThemeName, customThemevalue] of Object.entries(
-					item,
-				)) {
+			if (item && typeof item === "object") {
+				for (const customThemeName in item) {
 					includedThemesObj[customThemeName] = convertColorFormat(
-						customThemevalue as Record<string, string>,
+						item[customThemeName],
 					);
 				}
 			}
@@ -64,12 +61,13 @@ const injectThemes = (
 	}
 
 	let themeOrder = [];
-	if (Array.isArray(config("daisyui.themes"))) {
+	const newLocal = config("daisyui.themes");
+	if (Array.isArray(newLocal)) {
 		for (const theme of config("daisyui.themes") as Array<
-			string | Record<string, Record<string, string>>
+			string | Record<string, StringMap>
 		>) {
-			if (typeof theme === "object" && theme !== null) {
-				for (const customThemeName of Object.keys(theme)) {
+			if (theme && typeof theme === "object") {
+				for (const customThemeName in theme) {
 					themeOrder.push(customThemeName);
 				}
 			} else if (theme in includedThemesObj) {
@@ -137,22 +135,94 @@ const injectThemes = (
 	};
 };
 
+function* flattenRules(nodes: ChildNode[], parents: string[] = []): Generator<[string[], string, Declaration[]] | string> {
+	for (const node of nodes) {
+		if (node.type === 'comment') {
+			continue;
+		}
+		if (node.type === 'rule') {
+			const declarations = node.nodes.filter(({ type }) => type === 'decl') as Declaration[];
+			if (declarations.length !== node.nodes.filter(({ type }) => type !== 'comment').length) {
+				throw new Error('unexpected mixed declarations node');
+			}
+			if (declarations.length) {
+				node.nodes = declarations;
+				yield [parents, node.selector, declarations];
+			}
+		} else if (node.type === 'atrule') {
+			if (node.nodes == null || node.nodes.length === 0) {
+				continue;
+			}
+			if (node.name === 'keyframes') {
+				yield node.toString();
+			} else {
+				yield* flattenRules(node.nodes, [...parents, `@${node.name}${node.raws.afterName ?? ' '}${node.params ?? ''}`]);
+			}
+		} else {
+			// eslint-disable-next-line no-console
+			console.warn('skipping', node.type);
+		}
+	}
+}
+
+const CSSCLASS = /\.(?<name>[-\w\P{ASCII}]+)/gu;
+
+function getUnoCssElements(childNodes: ChildNode[], cssObjInputsByClassToken: Map<string, CSSObjectInput[]>, layer?: string): Preflight[] {
+	const preflights: Preflight[] = [];
+	let i = 0;
+	for (const rawElement of flattenRules(childNodes)) {
+		i++;
+		if (typeof rawElement === 'string') {
+			preflights.push({
+				getCSS: () => rawElement,
+				layer
+			});
+			continue;
+		}
+		const [parents, selector, declarations] = rawElement,
+			classTokens = new Set(Array.from(selector.matchAll(CSSCLASS).map(([, name]) => name)));
+
+		if (classTokens.size === 0) {
+			throw new Error('why include this rule?');
+		}
+
+		/*for (const classToken of classTokens) {
+			let cssObjInputs = cssObjInputsByClassToken.get(classToken);
+			if (cssObjInputs == null) {
+				cssObjInputs = [];
+				cssObjInputsByClassToken.set(classToken, cssObjInputs);
+			}
+			cssObjInputs.push({
+				...Object.fromEntries((declarations).map(({ important, prop, value }) => [prop, `${value}${important ? ' !important' : ''}`])),
+				[symbols.layer]: layer,
+				[symbols.parent]: parents.join(' $$ '),
+				[symbols.selector]: (currentSelector: string) =>
+					selector === currentSelector
+						? selector
+						: selector.replaceAll(CSSCLASS, (all, c) => {
+							return c === classToken ? currentSelector : all;
+						}),
+				[symbols.sort]: i - 1
+			});
+		}*/
+	}
+	return preflights;
+}
+
 export const presetDaisy = async (
 	o: Partial<typeof defaultOptions> = {},
 ): Promise<Preset> => {
-	const base = await getDaisyUIObjects("base");
-	const utilities = await getDaisyUIObjects("utilities");
-	const components = await getDaisyUIObjects("components");
-
 	const options = { ...defaultOptions, ...o };
+	const replacePrefix = (css: string) => css.replaceAll("--tw-", options.variablePrefix);
 
 	const rules = new Map<string, string>();
-	const specialRules: Record<string, string[]> = {
+	/*const specialRules: Record<string, string[]> = {
 		keyframes: [],
 		supports: [],
-	};
+	};*/
 	const nodes: Rule[] = [];
 
+	const components = await getDaisyUIObjects("components");
 	// const styles = [options.styled ? styled : unstyled];
 	const styles = options.styled ? Object.values(components) : [];
 	// console.log(styles)
@@ -160,12 +230,13 @@ export const presetDaisy = async (
 	// 	styles.push(...Object.values(utilities));
 	// }
 
+	/*
 	const categorizeRules = (node: ChildNode) => {
 		if (node.type === "rule") {
 			nodes.push(node);
 		} else if (node.type === "atrule") {
 			if (Array.isArray(specialRules[node.name])) {
-				specialRules[node.name]?.push(String(node));
+				specialRules[node.name].push(String(node));
 			} else if (node.nodes) {
 				// ignore and keep traversing, e.g. for @media
 				for (const child of node.nodes) {
@@ -182,11 +253,12 @@ export const presetDaisy = async (
 			categorizeRules(node);
 		}
 	}
+	*/
 
 	for (const node of nodes) {
-		const selector = node.selectors[0]!;
+		const selector = node.selectors[0];
 		const tokens = tokenize(selector);
-		const token = tokens[0]!;
+		const token = tokens[0];
 		let base = "";
 
 		if (token.type === "class") {
@@ -207,20 +279,26 @@ export const presetDaisy = async (
 			base = tokens[1]?.content.includes(".modal-open")
 				? "modal"
 				: // Skip prefixes
-					(tokens[2] as ClassToken).name;
+				(tokens[2] as ClassToken).name;
 		}
 
 		rules.set(base, `${(rules.get(base) ?? "") + String(node)}\n`);
 	}
 
-	const preflights: Preflight[] = Object.entries(specialRules).map(
+	const preflights: Preflight[] = getUnoCssElements(
+		nodes,
+		new Map<string, CSSObjectInput[]>(),
+		"daisy-components",
+	)
+	/*Object.entries(specialRules).map(
 		([key, value]) => ({
 			getCSS: () => value.join("\n"),
 			layer: `daisy-${key}}`,
 		}),
-	);
+	);*/
 
 	if (options.base) {
+		const base = await getDaisyUIObjects("base");
 		preflights.unshift({
 			getCSS: () => replacePrefix(process(base).css),
 			layer: "daisy-base",
@@ -249,6 +327,7 @@ export const presetDaisy = async (
 	);
 
 	if (options.utils) {
+		const utilities = await getDaisyUIObjects("utilities");
 		for (const util of Object.values(utilities)) {
 			preflights.push({
 				getCSS: () => replacePrefix(process(util).css),
